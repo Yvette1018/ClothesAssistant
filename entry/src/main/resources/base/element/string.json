@@ -1,0 +1,32 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "module description"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "label"
+    },
+    {
+      "name": "permission_internet_reason",
+      "value": "用于上传照片到服务器"
+    },
+    {
+      "name": "permission_camera_reason",
+      "value": "用于拍摄照片"
+    },
+    {
+      "name": "permission_read_media_reason",
+      "value": "用于读取照片进行上传"
+    },
+    {
+      "name": "permission_write_media_reason",
+      "value": "用于保存拍摄的照片"
+    }
+  ]
+}
