@@ -1,1941 +1,850 @@
-import { camera, cameraPicker as picker } from '@kit.CameraKit';
-import { fileIo } from '@kit.CoreFileKit';
-import { textToSpeech } from '@kit.CoreSpeechKit';
 import { common } from '@kit.AbilityKit';
-import http from '@ohos.net.http';
-import util from '@ohos.util';
 import { BusinessError } from '@ohos.base';
-
-interface AIResultData {
-  category: string;
-  type: string;
-  color: string;
-  material: string;
-  style: string;
-  pattern: string;
-  confidence: number;
-}
-
-interface AIResponse {
-  success: boolean;
-  message: string;
-  data: AIResultData;
-}
+import { AIResultData } from '../models/ClothingModel';
+import { WeatherData } from '../models/WeatherModel';
+import { OutfitResultData } from '../models/OutfitModel';
+import { ClothingViewModel } from '../viewmodels/ClothingViewModel';
 
 @Entry
 @Component
 struct Index {
 
   // =========================================================
-  // 图片状态
+  // API地址：只在这里集中维护
   // =========================================================
+  private analyzeUrl: string =
+    'http://172.26.182.40:8080/ai/analyze';
 
-  @State imageUri: string = '';
-  @State hasImage: boolean = false;
+  private recommendUrl: string =
+    'http://172.26.182.40:8080/ai/recommend';
 
   // =========================================================
-  // AI识别状态
+  // ViewModel
   // =========================================================
+  private viewModel: ClothingViewModel =
+    new ClothingViewModel(
+      this.analyzeUrl,
+      this.recommendUrl
+    );
 
-  @State isAnalyzing: boolean = false;
+  // =========================================================
+  // 定位状态
+  // =========================================================
+  @State locationText: string =
+    '正在获取当前位置...';
 
-  @State statusText: string =
-    '拍照或选择测试图片开始识别';
+  @State isLocationLoading: boolean = false;
+
+  @State hasLocation: boolean = false;
+
+  @State locationLatitude: number = 0;
+
+  @State locationLongitude: number = 0;
+
+  // =========================================================
+  // 页面状态
+  // =========================================================
+  @State message: string =
+    '请选择一张衣物图片';
+
+  @State photoUri: string = '';
+
+  @State showImage: boolean = false;
+
+  @State isUploading: boolean = false;
+
+  @State uploadResult: string = '';
+
+  @State aiResult: string = '';
 
   @State resultData: AIResultData | null = null;
 
   // =========================================================
-  // TTS
+  // 天气状态
   // =========================================================
+  @State weatherData: WeatherData = {
+    temperature: 0,
+    weather: '天气获取中',
+    humidity: 0,
+    windSpeed: 0
+  };
 
-  private ttsEngine:
-  textToSpeech.TextToSpeechEngine | null = null;
+  @State isWeatherLoading: boolean = false;
 
+  @State weatherText: string =
+    '正在获取天气...';
+
+  // =========================================================
+  // 穿搭推荐状态
+  // =========================================================
+  @State isRecommending: boolean = false;
+
+  @State outfitResult: OutfitResultData | null = null;
+
+  @State outfitText: string = '';
+
+  @State scene: string =
+    '日常出行';
+
+  // =========================================================
+  // TTS状态
+  // =========================================================
   @State isSpeaking: boolean = false;
 
   // =========================================================
-  // Spring Boot服务器
+  // 生命周期
   // =========================================================
-
-  private serverUrl: string =
-    'http://172.26.104.205:8080/ai/analyze';
-
-
-  // =========================================================
-  // 页面出现
-  // =========================================================
-
   aboutToAppear(): void {
+    console.info(
+      'AI衣物识别页面初始化'
+    );
 
-    console.info('Index页面出现');
+    this.viewModel.initTTS(
+      (speaking: boolean) => {
+        this.isSpeaking = speaking;
+      }
+    );
 
-    this.initTTS();
+    this.getCurrentLocation();
   }
 
-
   // =========================================================
-  // 初始化TTS
+  // Context
   // =========================================================
-
-  private initTTS(): void {
-
-    if (this.ttsEngine !== null) {
-      return;
-    }
-
-    const extraParams: Record<string, Object> = {
-
-      'style':
-      'interaction-broadcast',
-
-      'locate':
-      'CN',
-
-      'name':
-      'ClothingAI'
-    };
-
-    const initParams:
-      textToSpeech.CreateEngineParams = {
-
-      language:
-      'zh-CN',
-
-      person:
-      0,
-
-      online:
-      1,
-
-      extraParams:
-      extraParams
-    };
-
-    try {
-
-      textToSpeech.createEngine(
-        initParams,
-
-        (
-          err: BusinessError,
-          engine: textToSpeech.TextToSpeechEngine
-        ) => {
-
-          if (!err) {
-
-            console.info(
-              'TTS引擎创建成功'
-            );
-
-            this.ttsEngine =
-              engine;
-
-            this.ttsEngine.setListener({
-
-              onStart: (
-                requestId: string,
-                response:
-                  textToSpeech.StartResponse
-              ) => {
-
-                console.info(
-                  `TTS开始播报，requestId=${requestId}`
-                );
-
-                this.isSpeaking =
-                  true;
-              },
-
-
-              onComplete: (
-                requestId: string,
-                response:
-                  textToSpeech.CompleteResponse
-              ) => {
-
-                console.info(
-                  `TTS播报完成，requestId=${requestId}`
-                );
-
-                if (response.type === 1) {
-
-                  this.isSpeaking =
-                    false;
-                }
-              },
-
-
-              onStop: (
-                requestId: string,
-                response:
-                  textToSpeech.StopResponse
-              ) => {
-
-                console.info(
-                  `TTS停止播报，requestId=${requestId}`
-                );
-
-                this.isSpeaking =
-                  false;
-              },
-
-
-              onData: (
-                requestId: string,
-                audio: ArrayBuffer,
-                response:
-                  textToSpeech.SynthesisResponse
-              ) => {
-
-                console.info(
-                  `TTS音频数据返回，requestId=${requestId}`
-                );
-              },
-
-
-              onError: (
-                requestId: string,
-                errorCode: number,
-                errorMessage: string
-              ) => {
-
-                console.error(
-                  `TTS错误，requestId=${requestId}, ` +
-                    `errorCode=${errorCode}, ` +
-                    `errorMessage=${errorMessage}`
-                );
-
-                this.isSpeaking =
-                  false;
-              }
-            });
-
-          } else {
-
-            console.error(
-              `TTS引擎创建失败，` +
-                `错误码：${err.code}，` +
-                `错误信息：${err.message}`
-            );
-          }
-        }
-      );
-
-    } catch (error) {
-
-      const err =
-        error as BusinessError;
-
-      console.error(
-        `TTS初始化异常，` +
-          `错误码：${err.code}，` +
-          `错误信息：${err.message}`
-      );
-    }
+  private getContext(): common.UIAbilityContext {
+    return this.getUIContext()
+      .getHostContext() as common.UIAbilityContext;
   }
 
-
   // =========================================================
-  // TTS播报
+  // TTS
   // =========================================================
-
-  private speakText(
-    text: string
-  ): void {
-
-    if (this.ttsEngine === null) {
-
-      console.error(
-        'TTS引擎还没有初始化'
-      );
-
-      this.initTTS();
-
-      return;
-    }
-
-    if (
-      !text ||
-        text.trim() === ''
-    ) {
-
-      console.error(
-        'TTS播报内容为空'
-      );
-
-      return;
-    }
-
-    const extraParams:
-      Record<string, Object> = {
-
-      'queueMode':
-      1,
-
-      'speed':
-      1,
-
-      'volume':
-      2,
-
-      'pitch':
-      1,
-
-      'languageContext':
-      'zh-CN',
-
-      'audioType':
-      'pcm',
-
-      'soundChannel':
-      3,
-
-      'playType':
-      1
-    };
-
-    const speakParams:
-      textToSpeech.SpeakParams = {
-
-      requestId:
-      'clothing-ai-' +
-      Date.now(),
-
-      extraParams:
-      extraParams
-    };
-
-    try {
-
-      console.info(
-        '开始TTS播报：' +
-          text
-      );
-
-      this.isSpeaking =
-        true;
-
-      this.ttsEngine.speak(
-        text,
-        speakParams
-      );
-
-    } catch (error) {
-
-      const err =
-        error as BusinessError;
-
-      console.error(
-        `TTS播报异常，` +
-          `错误码：${err.code}，` +
-          `错误信息：${err.message}`
-      );
-
-      this.isSpeaking =
-        false;
-    }
+  private speakText(text: string): void {
+    this.viewModel.speak(text);
   }
-
-
-  // =========================================================
-  // 停止TTS
-  // =========================================================
 
   private stopSpeaking(): void {
+    this.viewModel.stopSpeaking();
+    this.isSpeaking = false;
+  }
 
-    if (this.ttsEngine === null) {
-
-      console.info(
-        'TTS引擎不存在'
-      );
-
+  // =========================================================
+  // 获取当前位置
+  // =========================================================
+  private async getCurrentLocation(): Promise<void> {
+    if (this.isLocationLoading) {
       return;
     }
 
+    this.isLocationLoading = true;
+    this.locationText =
+      '正在获取当前位置...';
+
     try {
+      const location =
+        await this.viewModel.getCurrentLocation(
+          this.getContext()
+        );
+
+      this.locationLatitude =
+        location.latitude;
+
+      this.locationLongitude =
+        location.longitude;
+
+      this.hasLocation = true;
+
+      this.locationText =
+        '定位成功';
 
       console.info(
-        '停止TTS播报'
+        '当前纬度：' + location.latitude
       );
 
-      this.ttsEngine.stop();
+      console.info(
+        '当前经度：' + location.longitude
+      );
 
-      this.isSpeaking =
-        false;
-
+      await this.getWeather();
     } catch (error) {
-
-      const err =
-        error as BusinessError;
+      const err = error as BusinessError;
 
       console.error(
-        `停止TTS失败，` +
-          `错误码：${err.code}，` +
-          `错误信息：${err.message}`
+        '定位失败：' +
+        JSON.stringify(error)
       );
 
-      this.isSpeaking =
-        false;
+      this.locationText =
+        '定位失败：' +
+        (err.message || '请检查定位权限和设备设置');
+
+      this.hasLocation = false;
+    } finally {
+      this.isLocationLoading = false;
     }
   }
 
-
   // =========================================================
-  // 生成AI语音播报内容
+  // 获取天气
   // =========================================================
-
-  private buildSpeechText(
-    data: AIResultData
-  ): string {
-
-    let text =
-      '识别完成。';
-
-    if (
-      data.color &&
-      data.material &&
-      data.type
-    ) {
-
-      text +=
-      `这是一件${data.color}` +
-        `${data.material}` +
-        `${data.type}。`;
-
-    } else if (
-      data.color &&
-      data.type
-    ) {
-
-      text +=
-      `这是一件${data.color}` +
-        `${data.type}。`;
-
-    } else if (
-    data.type
-    ) {
-
-      text +=
-      `这是一件${data.type}。`;
+  private async getWeather(): Promise<void> {
+    if (!this.hasLocation) {
+      this.weatherText =
+        '请先获取当前位置';
+      return;
     }
 
-    if (
-      data.category &&
-        data.category !== '无法判断'
-    ) {
-
-      text +=
-      `属于${data.category}。`;
+    if (this.isWeatherLoading) {
+      return;
     }
 
-    if (
-      data.style &&
-        data.style !== '无法判断'
-    ) {
+    this.isWeatherLoading = true;
+    this.weatherText =
+      '正在获取真实天气...';
 
-      text +=
-      `整体风格偏${data.style}。`;
+    try {
+      const weather =
+        await this.viewModel.getWeather(
+          this.locationLatitude,
+          this.locationLongitude
+        );
+
+      this.weatherData = weather;
+      this.weatherText =
+        '天气获取成功';
+
+      console.info(
+        '当前天气：' +
+        JSON.stringify(weather)
+      );
+    } catch (error) {
+      console.error(
+        '获取天气失败：' +
+        JSON.stringify(error)
+      );
+
+      this.weatherText =
+        '天气获取失败，暂时使用默认天气';
+
+      // 天气服务失败时保留默认值，
+      // 保证穿搭推荐仍然可以测试。
+      this.weatherData = {
+        temperature: 28,
+        weather: '晴',
+        humidity: 60,
+        windSpeed: 2
+      };
+    } finally {
+      this.isWeatherLoading = false;
     }
-
-    if (
-      data.pattern &&
-        data.pattern !== '无法判断'
-    ) {
-
-      text +=
-      `图案为${data.pattern}。`;
-    }
-
-    return text;
   }
-
 
   // =========================================================
   // 拍照
   // =========================================================
-
   private async takePhoto(): Promise<void> {
-
     try {
+      const imageUri =
+        await this.viewModel.takePhoto(
+          this.getContext()
+        );
+
+      this.photoUri = imageUri;
+      this.showImage = true;
+      this.message =
+        '拍照成功，可以进行AI识别';
+      this.uploadResult = '';
+      this.aiResult = '';
+      this.resultData = null;
+      this.outfitResult = null;
+      this.outfitText = '';
 
       console.info(
-        '开始调用相机'
+        '拍照成功：' + imageUri
       );
-
-      const context = getContext(this) as common.UIAbilityContext;
-
-      const pickerProfile:
-        picker.PickerProfile = {
-
-        cameraPosition:
-        camera.CameraPosition
-          .CAMERA_POSITION_BACK
-      };
-
-      const result:
-        picker.PickerResult =
-        await picker.pick(
-          context,
-
-          [
-            picker.PickerMediaType.PHOTO
-          ],
-
-          pickerProfile
-        );
-
-      console.info(
-        '相机返回结果：' +
-        JSON.stringify(result)
-      );
-
-      if (
-        result.resultCode === 0 &&
-        result.resultUri
-      ) {
-
-        this.imageUri =
-          result.resultUri;
-
-        this.hasImage =
-          true;
-
-        this.resultData =
-          null;
-
-        this.statusText =
-          '照片已选择，可以开始AI识别';
-
-        console.info(
-          '获取照片成功：' +
-          this.imageUri
-        );
-
-      } else {
-
-        console.error(
-          '没有获取到拍照结果'
-        );
-
-        this.statusText =
-          '没有获取到拍照结果';
-
-        this.speakText(
-          '没有获取到拍照结果，请重新拍摄。'
-        );
-      }
-
     } catch (error) {
-
-      const err =
-        error as BusinessError;
+      const err = error as BusinessError;
 
       console.error(
-        `调用相机失败：` +
-          `code=${err.code}, ` +
-          `message=${err.message}`
+        `拍照失败，错误码：${err.code}，错误信息：${err.message}`
       );
 
-      this.statusText =
-        '调用相机失败';
-
-      this.speakText(
-        '调用相机失败，请重新尝试。'
-      );
+      this.message =
+        '拍照失败：' + err.message;
     }
   }
 
-
   // =========================================================
-  // 加载测试图片
+  // 测试图片
   // =========================================================
+  private async useTestImage(): Promise<void> {
+    try {
+      const imageUri =
+        await this.viewModel.loadTestImage(
+          this.getContext()
+        );
 
-  private loadTestImage(): void {
+      this.photoUri = imageUri;
+      this.showImage = true;
+      this.message =
+        '测试图片加载成功';
+      this.uploadResult = '';
+      this.aiResult = '';
+      this.resultData = null;
+      this.outfitResult = null;
+      this.outfitText = '';
 
-    this.imageUri =
-      'resource://RAWFILE/test_clothes.jpg';
+      console.info(
+        '测试图片URI：' + imageUri
+      );
+    } catch (error) {
+      const err = error as BusinessError;
 
-    this.hasImage =
-      true;
-
-    this.resultData =
-      null;
-
-    this.statusText =
-      '测试图片已加载，可以开始AI识别';
-
-    console.info(
-      '测试图片加载成功'
-    );
-  }
-
-
-  // =========================================================
-  // 拼接Uint8Array
-  // =========================================================
-
-  private concatUint8Arrays(
-    parts: Uint8Array[]
-  ): Uint8Array {
-
-    let totalLength =
-      0;
-
-    for (
-      let i = 0;
-      i < parts.length;
-      i++
-    ) {
-
-      totalLength +=
-      parts[i].length;
-    }
-
-    const result =
-      new Uint8Array(
-        totalLength
+      console.error(
+        '读取测试图片失败：' +
+        err.message
       );
 
-    let offset =
-      0;
-
-    for (
-      let i = 0;
-      i < parts.length;
-      i++
-    ) {
-
-      result.set(
-        parts[i],
-        offset
-      );
-
-      offset +=
-      parts[i].length;
+      this.message =
+        '读取测试图片失败：' +
+        err.message;
     }
-
-    return result;
   }
 
-
   // =========================================================
-  // 构造真正的multipart/form-data请求
+  // AI衣物识别
   // =========================================================
-
-  private buildMultipartBody(
-    imageBytes: Uint8Array,
-    fileName: string,
-    contentType: string,
-    boundary: string
-  ): ArrayBuffer {
-
-    const encoder =
-      new util.TextEncoder();
-
-    const headerText =
-      `--${boundary}\r\n` +
-        `Content-Disposition: form-data; ` +
-        `name="file"; ` +
-        `filename="${fileName}"\r\n` +
-        `Content-Type: ${contentType}\r\n` +
-        `\r\n`;
-
-    const footerText =
-      `\r\n` +
-        `--${boundary}--\r\n`;
-
-    const headerBytes =
-      encoder.encodeInto(
-        headerText
-      );
-
-    const footerBytes =
-      encoder.encodeInto(
-        footerText
-      );
-
-    const body =
-      this.concatUint8Arrays([
-        headerBytes,
-        imageBytes,
-        footerBytes
-      ]);
-
-    console.info(
-      `multipart body构造完成，` +
-        `boundary=${boundary}, ` +
-        `bodySize=${body.length}`
-    );
-
-    return body.buffer;
-  }
-
-
-  // =========================================================
-  // 判断图片类型
-  // =========================================================
-
-  private getImageContentType(
-    uri: string
-  ): string {
-
-    const lower =
-      uri.toLowerCase();
-
-    if (
-    lower.endsWith('.png')
-    ) {
-
-      return 'image/png';
-    }
-
-    if (
-    lower.endsWith('.webp')
-    ) {
-
-      return 'image/webp';
-    }
-
-    return 'image/jpeg';
-  }
-
-
-  // =========================================================
-  // AI识别
-  // =========================================================
-
   private async analyzeImage(): Promise<void> {
-
-    // =======================================================
-    // 检查图片
-    // =======================================================
-
-    if (
-      !this.hasImage ||
-        !this.imageUri
-    ) {
-
-      this.statusText =
-        '请先选择一张衣物图片';
+    if (!this.photoUri) {
+      this.message =
+        '请先拍照或选择测试图片';
 
       this.speakText(
-        '请先选择一张衣物图片。'
+        '请先选择一张衣物图片'
       );
-
       return;
     }
 
-
-    // =======================================================
-    // 防止重复点击
-    // =======================================================
-
-    if (
-    this.isAnalyzing
-    ) {
-
+    if (this.isUploading) {
       return;
     }
 
-
-    // =======================================================
-    // 开始AI识别
-    // =======================================================
-
-    this.isAnalyzing =
-      true;
-
-    this.resultData =
-      null;
-
-    this.statusText =
-      '正在识别衣物，请稍候...';
-
-    this.speakText(
-      '正在识别衣物，请稍候。'
-    );
-
-
-    // =======================================================
-    // 创建HTTP请求
-    // =======================================================
-
-    const httpRequest =
-      http.createHttp();
-
+    this.isUploading = true;
+    this.message =
+      '正在进行AI衣物识别...';
+    this.uploadResult = '';
+    this.aiResult = '';
+    this.resultData = null;
+    this.outfitResult = null;
+    this.outfitText = '';
 
     try {
-
-      // =====================================================
-      // 读取图片
-      // =====================================================
-
-      let imageBytes:
-        Uint8Array;
-
-
-      // =====================================================
-      // 测试图片
-      // =====================================================
-
-      if (
-        this.imageUri ===
-          'resource://RAWFILE/test_clothes.jpg'
-      ) {
-
-        console.info(
-          '正在从rawfile读取测试图片'
-        );
-
-        const context = getContext(this) as common.UIAbilityContext;
-
-        imageBytes =
-          await context.resourceManager
-            .getRawFileContent(
-              'test_clothes.jpg'
-            );
-
-        console.info(
-          `测试图片读取成功，` +
-            `大小=${imageBytes.length} bytes`
-        );
-
-      } else {
-
-        // ===================================================
-        // 拍摄图片
-        // ===================================================
-
-        console.info(
-          '正在从文件路径读取拍摄图片'
-        );
-
-        const file =
-          await fileIo.open(
-            this.imageUri,
-            fileIo.OpenMode.READ_ONLY
-          );
-
-        try {
-
-          const stat =
-            await fileIo.stat(
-              file.fd
-            );
-
-          const fileSize =
-            stat.size;
-
-          const buffer =
-            new ArrayBuffer(
-              fileSize
-            );
-
-          await fileIo.read(
-            file.fd,
-            buffer
-          );
-
-          imageBytes =
-            new Uint8Array(
-              buffer
-            );
-
-          console.info(
-            `拍摄图片读取成功，` +
-              `大小=${imageBytes.length} bytes`
-          );
-
-        } finally {
-
-          await fileIo.close(
-            file.fd
-          );
-        }
-      }
-
-
-      // =====================================================
-      // 图片类型
-      // =====================================================
-
-      const contentType =
-        this.getImageContentType(
-          this.imageUri
-        );
-
-      let fileName =
-        'clothes.jpg';
-
-      if (
-        contentType ===
-          'image/png'
-      ) {
-
-        fileName =
-          'clothes.png';
-
-      } else if (
-        contentType ===
-          'image/webp'
-      ) {
-
-        fileName =
-          'clothes.webp';
-      }
-
-
-      // =====================================================
-      // 创建boundary
-      // =====================================================
-
-      const boundary =
-        '----HarmonyOSClothingAI' +
-        Date.now().toString();
-
-
-      // =====================================================
-      // 构造multipart body
-      // =====================================================
-
-      const multipartBody =
-        this.buildMultipartBody(
-          imageBytes,
-          fileName,
-          contentType,
-          boundary
-        );
-
-
-      console.info(
-        `multipart请求构造完成，` +
-          `body大小=${multipartBody.byteLength}`
-      );
-
-
-      // =====================================================
-      // HTTP请求配置
-      // =====================================================
-
-      const requestOptions:
-        http.HttpRequestOptions = {
-
-        method:
-        http.RequestMethod.POST,
-
-        header: {
-
-          'Content-Type':
-          `multipart/form-data; boundary=${boundary}`
-        },
-
-        extraData:
-        multipartBody,
-
-        expectDataType:
-        http.HttpDataType.STRING,
-
-        connectTimeout:
-        10000,
-
-        readTimeout:
-        60000
-      };
-
-
-      // =====================================================
-      // 输出请求日志
-      // =====================================================
-
-      console.info(
-        '===================================='
-      );
-
-      console.info(
-        '开始上传图片到Spring Boot'
-      );
-
-      console.info(
-        '服务器地址：' +
-        this.serverUrl
-      );
-
-      console.info(
-        'Content-Type：' +
-          requestOptions.header?.[
-          'Content-Type'
-          ]
-      );
-
-      console.info(
-        '图片大小：' +
-        imageBytes.length +
-          ' bytes'
-      );
-
-      console.info(
-        '===================================='
-      );
-
-
-      // =====================================================
-      // 发送请求
-      // =====================================================
-
       const response =
-        await httpRequest.request(
-          this.serverUrl,
-          requestOptions
+        await this.viewModel.analyzeImage(
+          this.getContext(),
+          this.photoUri
         );
-
-
-      // =====================================================
-      // 打印响应
-      // =====================================================
-
-      console.info(
-        `服务器响应状态码：` +
-        response.responseCode
-      );
-
-      console.info(
-        '服务器返回：' +
-        response.result
-      );
-
-
-      // =====================================================
-      // HTTP状态检查
-      // =====================================================
-
-      if (
-        response.responseCode < 200 ||
-          response.responseCode >= 300
-      ) {
-
-        throw new Error(
-          `服务器返回错误状态码：` +
-          response.responseCode +
-            `，内容：` +
-          response.result
-        );
-      }
-
-
-      // =====================================================
-      // 解析JSON
-      // =====================================================
-
-      const responseText =
-        response.result as string;
-
-      const responseData =
-        JSON.parse(
-          responseText
-        ) as AIResponse;
-
-
-      // =====================================================
-      // 判断AI识别结果
-      // =====================================================
-
-      if (
-        responseData.success &&
-        responseData.data
-      ) {
-
-        const result =
-          responseData.data;
-
-
-        // ===================================================
-        // 保存AI结果
-        // ===================================================
-
-        this.resultData =
-          result;
-
-        this.statusText =
-          'AI识别完成';
-
-
-        // ===================================================
-        // 输出结果
-        // ===================================================
-
-        console.info(
-          'AI识别结果：' +
-          JSON.stringify(result)
-        );
-
-
-        // ===================================================
-        // 构造播报文本
-        // ===================================================
-
-        const speechText =
-          this.buildSpeechText(
-            result
-          );
-
-        console.info(
-          '播报内容：' +
-            speechText
-        );
-
-
-        // ===================================================
-        // 自动播报
-        // ===================================================
-
-        this.speakText(
-          speechText
-        );
-
-      } else {
-
-        throw new Error(
-          responseData.message ||
-            'AI识别失败'
-        );
-      }
-
-    } catch (error) {
-
-      const err =
-        error as BusinessError;
-
-      console.error(
-        '===================================='
-      );
-
-      console.error(
-        'AI识别异常'
-      );
-
-      console.error(
-        `错误码：${err.code}`
-      );
-
-      console.error(
-        `错误信息：${err.message}`
-      );
-
-      console.error(
-        '===================================='
-      );
-
-
-      this.statusText =
-        'AI识别失败，请稍后重试';
 
       this.resultData =
-        null;
+        response.data;
 
+      this.aiResult =
+        JSON.stringify(
+          response.data,
+          null,
+          2
+        );
 
-      // =====================================================
-      // 失败语音
-      // =====================================================
+      this.uploadResult =
+        '衣物识别成功';
+
+      this.message =
+        'AI衣物识别完成';
 
       this.speakText(
-        '衣物识别失败，请稍后重试。'
+        this.viewModel.buildClothingSpeechText(
+          response.data
+        )
       );
 
+      // 重新刷新天气，防止页面停留过久。
+      await this.getWeather();
+    } catch (error) {
+      const err = error as BusinessError;
+
+      console.error(
+        `AI识别失败：${err.code} ${err.message}`
+      );
+
+      this.message =
+        'AI识别失败：' + err.message;
+
+      this.uploadResult =
+        'AI识别失败';
     } finally {
-
-      this.isAnalyzing =
-        false;
-
-
-      // =====================================================
-      // 销毁HTTP请求
-      // =====================================================
-
-      try {
-
-        httpRequest.destroy();
-
-      } catch (error) {
-
-        console.error(
-          'HTTP请求销毁失败：' +
-          JSON.stringify(error)
-        );
-      }
+      this.isUploading = false;
     }
   }
 
+  // =========================================================
+  // AI智能穿搭推荐
+  // =========================================================
+  private async recommendOutfit(): Promise<void> {
+    if (this.resultData === null) {
+      this.message =
+        '请先完成AI衣物识别';
+
+      this.speakText(
+        '请先完成衣物识别，再进行穿搭推荐'
+      );
+      return;
+    }
+
+    if (this.isRecommending) {
+      return;
+    }
+
+    if (this.weatherText !== '天气获取成功') {
+      await this.getWeather();
+    }
+
+    this.isRecommending = true;
+    this.message =
+      '正在结合天气和场景生成穿搭建议...';
+    this.outfitResult = null;
+    this.outfitText = '';
+
+    try {
+      const outfitData =
+        await this.viewModel.recommendOutfit(
+          this.resultData,
+          this.weatherData,
+          this.scene
+        );
+
+      this.outfitResult =
+        outfitData;
+
+      this.outfitText =
+        outfitData.recommendation;
+
+      this.message =
+        'AI智能穿搭推荐完成';
+
+      if (
+        outfitData.voiceText &&
+        outfitData.voiceText.trim() !== ''
+      ) {
+        this.speakText(
+          outfitData.voiceText
+        );
+      } else {
+        this.speakText(
+          outfitData.recommendation
+        );
+      }
+    } catch (error) {
+      const err = error as BusinessError;
+
+      console.error(
+        `AI穿搭推荐失败：${err.code} ${err.message}`
+      );
+
+      this.message =
+        'AI穿搭推荐失败：' +
+        err.message;
+
+      this.outfitText =
+        '暂时无法生成穿搭建议';
+    } finally {
+      this.isRecommending = false;
+    }
+  }
 
   // =========================================================
   // 页面UI
+  // 保留原有功能入口；本次主要拆分业务逻辑，不重做UI。
   // =========================================================
-
   build() {
-
     Scroll() {
+      Column({
+        space: 15
+      }) {
 
-      Column() {
+        Text('AI衣物识别')
+          .fontSize(28)
+          .fontWeight(FontWeight.Bold)
+          .margin({
+            top: 20,
+            bottom: 10
+          });
 
-        // ===================================================
-        // 顶部区域
-        // ===================================================
+        Text(this.message)
+          .fontSize(18)
+          .width('90%')
+          .textAlign(TextAlign.Center);
 
-        Row() {
-
+        if (
+          this.showImage &&
+          this.photoUri !== ''
+        ) {
           Column() {
-
-            Text('AI衣物识别')
-              .fontSize(28)
-              .fontWeight(
-                FontWeight.Bold
-              )
-              .fontColor(
-                '#1A1A1A'
-              );
-
-            Text(
-              '智能识别衣物属性'
-            )
-              .fontSize(15)
-              .fontColor(
-                '#777777'
-              )
+            Text('已选择的衣物图片')
+              .fontSize(18)
+              .fontWeight(FontWeight.Bold)
               .margin({
-                top: 6
+                bottom: 10
               });
 
-          }
-          .alignItems(
-            HorizontalAlign.Start
-          )
-          .layoutWeight(1);
-
-
-          Column() {
-
-            Text('AI')
-              .fontSize(15)
-              .fontWeight(
-                FontWeight.Bold
-              )
-              .fontColor(
-                '#1677FF'
-              );
-
-          }
-          .width(48)
-          .height(48)
-          .justifyContent(
-            FlexAlign.Center
-          )
-          .alignItems(
-            HorizontalAlign.Center
-          )
-          .backgroundColor(
-            '#EAF3FF'
-          )
-          .borderRadius(24);
-
-        }
-        .width('100%')
-        .padding({
-          left: 20,
-          right: 20,
-          top: 24,
-          bottom: 16
-        });
-
-
-        // ===================================================
-        // 图片展示卡片
-        // ===================================================
-
-        Column() {
-
-          if (this.hasImage) {
-
-            Image(this.imageUri)
+            Image(this.photoUri)
               .width('100%')
-              .height(270)
-              .objectFit(
-                ImageFit.Contain
-              )
-              .borderRadius(16);
-
-          } else {
-
-            Column() {
-
-              Text('👕')
-                .fontSize(64);
-
-              Text(
-                '还没有选择衣物图片'
-              )
-                .fontSize(18)
-                .fontWeight(
-                  FontWeight.Medium
-                )
-                .fontColor(
-                  '#555555'
-                )
-                .margin({
-                  top: 12
-                });
-
-              Text(
-                '拍照或选择测试图片'
-              )
-                .fontSize(14)
-                .fontColor(
-                  '#999999'
-                )
-                .margin({
-                  top: 7
-                });
-
-            }
-            .width('100%')
-            .height(270)
-            .justifyContent(
-              FlexAlign.Center
-            )
-            .alignItems(
-              HorizontalAlign.Center
-            );
+              .height(280)
+              .objectFit(ImageFit.Contain)
+              .borderRadius(12);
           }
-
+          .width('90%')
+          .padding(15)
+          .backgroundColor('#F5F5F5')
+          .borderRadius(16);
         }
-        .width('90%')
-        .padding(12)
-        .backgroundColor(
-          '#FFFFFF'
-        )
-        .borderRadius(20)
-        .shadow({
-          radius: 14,
-          color: '#22000000',
-          offsetX: 0,
-          offsetY: 4
-        });
 
-
-        // ===================================================
-        // 图片操作按钮
-        // ===================================================
-
-        Row() {
-
-          // =================================================
-          // 拍照
-          // =================================================
-
-          Button() {
-
-            Row() {
-
-              Text('📷')
-                .fontSize(20)
-                .margin({
-                  right: 7
-                });
-
-              Text('拍照')
-                .fontSize(16)
-                .fontWeight(
-                  FontWeight.Medium
-                );
-
-            }
-            .justifyContent(
-              FlexAlign.Center
-            );
-
-          }
-          .width('47%')
+        Button('拍照')
+          .width('80%')
           .height(50)
-          .backgroundColor(
-            '#FFFFFF'
-          )
-          .fontColor(
-            '#222222'
-          )
-          .borderRadius(14)
           .onClick(() => {
-
             this.takePhoto();
-
           });
 
-
-          // =================================================
-          // 测试图片
-          // =================================================
-
-          Button() {
-
-            Row() {
-
-              Text('🖼️')
-                .fontSize(20)
-                .margin({
-                  right: 7
-                });
-
-              Text('测试图片')
-                .fontSize(16)
-                .fontWeight(
-                  FontWeight.Medium
-                );
-
-            }
-            .justifyContent(
-              FlexAlign.Center
-            );
-
-          }
-          .width('47%')
+        Button('使用测试图片')
+          .width('80%')
           .height(50)
-          .backgroundColor(
-            '#FFFFFF'
-          )
-          .fontColor(
-            '#222222'
-          )
-          .borderRadius(14)
           .onClick(() => {
-
-            this.loadTestImage();
-
+            this.useTestImage();
           });
 
-        }
-        .width('90%')
-        .justifyContent(
-          FlexAlign.SpaceBetween
+        Button(
+          this.isUploading
+            ? '正在识别...'
+            : '开始AI衣物识别'
         )
-        .margin({
-          top: 15
-        });
-
-
-        // ===================================================
-        // AI识别按钮
-        // ===================================================
-
-        Button() {
-
-          Row() {
-
-            if (
-            this.isAnalyzing
-            ) {
-
-              LoadingProgress()
-                .width(22)
-                .height(22)
-                .margin({
-                  right: 10
-                });
-
-            } else {
-
-              Text('✨')
-                .fontSize(21)
-                .margin({
-                  right: 8
-                });
-            }
-
-
-            Text(
-              this.isAnalyzing
-                ? '正在分析衣物...'
-                : '开始 AI 识别'
-            )
-              .fontSize(17)
-              .fontWeight(
-                FontWeight.Medium
-              );
-
-          }
-          .justifyContent(
-            FlexAlign.Center
-          );
-
-        }
-        .width('90%')
-        .height(56)
-        .margin({
-          top: 15
-        })
-        .backgroundColor(
-          this.isAnalyzing
-            ? '#8CB8FF'
-            : '#1677FF'
-        )
-        .fontColor(
-          '#FFFFFF'
-        )
-        .borderRadius(16)
-        .enabled(
-          !this.isAnalyzing
-        )
-        .onClick(() => {
-
-          this.analyzeImage();
-
-        });
-
-
-        // ===================================================
-        // 当前状态
-        // ===================================================
-
-        Row() {
-
-          Text('●')
-            .fontSize(10)
-            .fontColor(
-              this.isAnalyzing
-                ? '#1677FF'
-                : '#52C41A'
-            )
-            .margin({
-              right: 8
-            });
-
-          Text(
-            this.statusText
-          )
-            .fontSize(14)
-            .fontColor(
-              '#666666'
-            )
-            .layoutWeight(1)
-            .textAlign(
-              TextAlign.Center
-            );
-
-        }
-        .width('90%')
-        .padding({
-          top: 13,
-          bottom: 5
-        })
-        .justifyContent(
-          FlexAlign.Center
-        );
-
-
-        // ===================================================
-        // AI识别结果
-        // ===================================================
+          .width('80%')
+          .height(55)
+          .enabled(!this.isUploading)
+          .onClick(() => {
+            this.analyzeImage();
+          });
 
         if (
           this.resultData !== null
         ) {
+          Column({
+            space: 8
+          }) {
+            Text('👚 衣物识别结果')
+              .fontSize(24)
+              .fontWeight(FontWeight.Bold);
 
-          Column() {
-
-            // ===============================================
-            // 结果标题
-            // ===============================================
-
-            Row() {
-
-              Column() {
-
-                Text(
-                  '识别结果'
-                )
-                  .fontSize(20)
-                  .fontWeight(
-                    FontWeight.Bold
-                  )
-                  .fontColor(
-                    '#222222'
-                  );
-
-                Text(
-                  'AI 已完成衣物分析'
-                )
-                  .fontSize(13)
-                  .fontColor(
-                    '#999999'
-                  )
-                  .margin({
-                    top: 4
-                  });
-
-              }
-              .alignItems(
-                HorizontalAlign.Start
-              )
-              .layoutWeight(1);
-
-
-              Text('✓')
-                .fontSize(18)
-                .fontWeight(
-                  FontWeight.Bold
-                )
-                .fontColor(
-                  '#FFFFFF'
-                )
-                .width(34)
-                .height(34)
-                .textAlign(
-                  TextAlign.Center
-                )
-                .backgroundColor(
-                  '#52C41A'
-                )
-                .borderRadius(17);
-
-            }
-            .width('100%')
-            .margin({
-              bottom: 18
-            });
-
-
-            // ===============================================
-            // 核心识别结果
-            // ===============================================
-
-            Column() {
-
-              Text(
-                this.resultData.color +
-                this.resultData.type
-              )
-                .fontSize(24)
-                .fontWeight(
-                  FontWeight.Bold
-                )
-                .fontColor(
-                  '#1677FF'
-                )
-                .margin({
-                  bottom: 6
-                });
-
-              Text(
-                this.resultData.category
-              )
-                .fontSize(14)
-                .fontColor(
-                  '#777777'
-                );
-
-            }
-            .width('100%')
-            .padding({
-              top: 16,
-              bottom: 16
-            })
-            .backgroundColor(
-              '#F4F8FF'
-            )
-            .borderRadius(14)
-            .justifyContent(
-              FlexAlign.Center
-            )
-            .alignItems(
-              HorizontalAlign.Center
+            this.ResultRow(
+              '类别',
+              this.resultData.category
             );
 
+            this.ResultRow(
+              '类型',
+              this.resultData.type
+            );
 
-            // ===============================================
-            // 详细属性
-            // ===============================================
+            this.ResultRow(
+              '颜色',
+              this.resultData.color
+            );
 
-            Column() {
+            this.ResultRow(
+              '材质',
+              this.resultData.material
+            );
 
-              this.ResultRow(
-                '衣物类别',
-                this.resultData.category
-              );
+            this.ResultRow(
+              '风格',
+              this.resultData.style
+            );
 
-              this.ResultRow(
-                '具体类型',
-                this.resultData.type
-              );
+            this.ResultRow(
+              '图案',
+              this.resultData.pattern
+            );
 
-              this.ResultRow(
-                '主要颜色',
-                this.resultData.color
-              );
-
-              this.ResultRow(
-                '材质',
-                this.resultData.material
-              );
-
-              this.ResultRow(
-                '风格',
-                this.resultData.style
-              );
-
-              this.ResultRow(
-                '图案',
-                this.resultData.pattern
-              );
-
-              this.ResultRow(
-                '识别置信度',
-                `${Math.round(
-                  this.resultData.confidence *
-                    100
-                )}%`
-              );
-
-            }
-            .width('100%')
-            .margin({
-              top: 10
-            });
-
-
-            // ===============================================
-            // 语音播报按钮
-            // ===============================================
-
-            if (
-            this.isSpeaking
-            ) {
-
-              Button() {
-
-                Row() {
-
-                  Text('🛑')
-                    .fontSize(20)
-                    .margin({
-                      right: 8
-                    });
-
-                  Text(
-                    '停止播报'
-                  )
-                    .fontSize(16)
-                    .fontWeight(
-                      FontWeight.Medium
-                    );
-
-                }
-                .justifyContent(
-                  FlexAlign.Center
-                );
-
-              }
-              .width('100%')
-              .height(52)
-              .margin({
-                top: 18
-              })
-              .backgroundColor(
-                '#FF4D4F'
-              )
-              .fontColor(
-                '#FFFFFF'
-              )
-              .borderRadius(14)
-              .onClick(() => {
-
-                this.stopSpeaking();
-
-              });
-
-            } else {
-
-              Button() {
-
-                Row() {
-
-                  Text('🔊')
-                    .fontSize(20)
-                    .margin({
-                      right: 8
-                    });
-
-                  Text(
-                    '再次播报识别结果'
-                  )
-                    .fontSize(16)
-                    .fontWeight(
-                      FontWeight.Medium
-                    );
-
-                }
-                .justifyContent(
-                  FlexAlign.Center
-                );
-
-              }
-              .width('100%')
-              .height(52)
-              .margin({
-                top: 18
-              })
-              .backgroundColor(
-                '#1677FF'
-              )
-              .fontColor(
-                '#FFFFFF'
-              )
-              .borderRadius(14)
-              .onClick(() => {
-
-                if (
-                  this.resultData !== null
-                ) {
-
-                  const speechText =
-                    this.buildSpeechText(
-                      this.resultData
-                    );
-
-                  this.speakText(
-                    speechText
-                  );
-                }
-
-              });
-            }
-
-
-            // ===============================================
-            // 下一阶段功能入口
-            // ===============================================
-
-            Row() {
-
-              Text('👗')
-                .fontSize(18)
-                .margin({
-                  right: 8
-                });
-
-              Column() {
-
-                Text(
-                  '智能穿搭推荐'
-                )
-                  .fontSize(15)
-                  .fontWeight(
-                    FontWeight.Medium
-                  )
-                  .fontColor(
-                    '#333333'
-                  );
-
-                Text(
-                  '下一步将根据天气和场景推荐搭配'
-                )
-                  .fontSize(12)
-                  .fontColor(
-                    '#999999'
-                  )
-                  .margin({
-                    top: 3
-                  });
-
-              }
-              .alignItems(
-                HorizontalAlign.Start
-              )
-              .layoutWeight(1);
-
-              Text('›')
-                .fontSize(26)
-                .fontColor(
-                  '#AAAAAA'
-                );
-
-            }
-            .width('100%')
-            .padding({
-              left: 14,
-              right: 14,
-              top: 13,
-              bottom: 13
-            })
-            .margin({
-              top: 15
-            })
-            .backgroundColor(
-              '#F8F9FB'
-            )
-            .borderRadius(14);
-
+            this.ResultRow(
+              '置信度',
+              this.resultData.confidence.toString()
+            );
           }
           .width('90%')
-          .padding(20)
-          .margin({
-            top: 18,
-            bottom: 30
-          })
-          .backgroundColor(
-            '#FFFFFF'
-          )
-          .borderRadius(20)
-          .shadow({
-            radius: 12,
-            color: '#22000000',
-            offsetX: 0,
-            offsetY: 3
-          });
+          .padding(15)
+          .borderRadius(18)
+          .backgroundColor('#F8F9FC');
         }
+
+        // ===================================================
+        // 定位与天气
+        // ===================================================
+        Column({
+          space: 12
+        }) {
+
+          Column({
+            space: 8
+          }) {
+            Text('📍 当前位置')
+              .fontSize(22)
+              .fontWeight(FontWeight.Bold);
+
+            Text(this.locationText)
+              .fontSize(17)
+              .fontColor('#555555');
+
+            if (this.hasLocation) {
+              Text(
+                `纬度：${this.locationLatitude.toFixed(4)}`
+              )
+                .fontSize(14)
+                .fontColor('#888888');
+
+              Text(
+                `经度：${this.locationLongitude.toFixed(4)}`
+              )
+                .fontSize(14)
+                .fontColor('#888888');
+            }
+
+            Button(
+              this.isLocationLoading
+                ? '正在定位...'
+                : '刷新当前位置'
+            )
+              .width('90%')
+              .height(42)
+              .enabled(!this.isLocationLoading)
+              .onClick(() => {
+                this.getCurrentLocation();
+              });
+          }
+          .width('100%')
+          .padding(16)
+          .borderRadius(16)
+          .backgroundColor('#F5F5F5');
+
+          Column({
+            space: 10
+          }) {
+            Text('🌤 当前天气')
+              .fontSize(22)
+              .fontWeight(FontWeight.Bold);
+
+            Text(
+              `${this.weatherData.temperature}℃`
+            )
+              .fontSize(38)
+              .fontWeight(FontWeight.Bold);
+
+            Text(
+              this.weatherData.weather
+            )
+              .fontSize(22);
+
+            Text(
+              `湿度：${this.weatherData.humidity}%`
+            )
+              .fontSize(17);
+
+            Text(
+              `风速：${this.weatherData.windSpeed}m/s`
+            )
+              .fontSize(17);
+
+            Text(this.weatherText)
+              .fontSize(14)
+              .fontColor('#888888');
+          }
+          .width('100%')
+          .padding(16)
+          .borderRadius(16)
+          .backgroundColor('#F5F5F5');
+        }
+        .width('90%');
+
+        // ===================================================
+        // 使用场景 + 智能穿搭
+        // ===================================================
+        if (
+          this.resultData !== null
+        ) {
+          Column({
+            space: 12
+          }) {
+            Text('👕 使用场景')
+              .fontSize(22)
+              .fontWeight(FontWeight.Bold);
+
+            Text(
+              `当前场景：${this.scene}`
+            )
+              .fontSize(17)
+              .fontColor('#555555');
+
+            Row({
+              space: 10
+            }) {
+              Button('日常出行')
+                .fontSize(14)
+                .layoutWeight(1)
+                .onClick(() => {
+                  this.scene = '日常出行';
+                });
+
+              Button('上班通勤')
+                .fontSize(14)
+                .layoutWeight(1)
+                .onClick(() => {
+                  this.scene = '上班通勤';
+                });
+            }
+            .width('100%');
+
+            Row({
+              space: 10
+            }) {
+              Button('运动健身')
+                .fontSize(14)
+                .layoutWeight(1)
+                .onClick(() => {
+                  this.scene = '运动健身';
+                });
+
+              Button('约会聚餐')
+                .fontSize(14)
+                .layoutWeight(1)
+                .onClick(() => {
+                  this.scene = '约会聚餐';
+                });
+            }
+            .width('100%');
+          }
+          .width('90%')
+          .padding(16)
+          .borderRadius(16)
+          .backgroundColor('#F5F5F5');
+
+          Button(
+            this.isRecommending
+              ? 'AI正在生成穿搭建议...'
+              : 'AI智能穿搭推荐'
+          )
+            .width('80%')
+            .height(55)
+            .enabled(!this.isRecommending)
+            .onClick(() => {
+              this.recommendOutfit();
+            });
+        }
+
+        // ===================================================
+        // 穿搭结果
+        // ===================================================
+        if (
+          this.outfitResult !== null
+        ) {
+          Column({
+            space: 12
+          }) {
+            Text('✨ AI 智能穿搭建议')
+              .fontSize(24)
+              .fontWeight(FontWeight.Bold);
+
+            Text(
+              `匹配程度：${this.outfitResult.match}`
+            )
+              .fontSize(18)
+              .fontWeight(FontWeight.Bold);
+
+            Divider();
+
+            Text('穿搭推荐')
+              .fontSize(19)
+              .fontWeight(FontWeight.Bold);
+
+            Text(
+              this.outfitResult.recommendation
+            )
+              .fontSize(17);
+
+            Text('推荐原因')
+              .fontSize(19)
+              .fontWeight(FontWeight.Bold);
+
+            Text(
+              this.outfitResult.reason
+            )
+              .fontSize(17);
+
+            Text('搭配建议')
+              .fontSize(19)
+              .fontWeight(FontWeight.Bold);
+
+            Text(
+              this.outfitResult.suggestion
+            )
+              .fontSize(17);
+          }
+          .width('90%')
+          .padding(18)
+          .borderRadius(18)
+          .backgroundColor('#F8F9FC');
+        }
+
+        if (this.isSpeaking) {
+          Button('停止语音播报')
+            .width('70%')
+            .height(50)
+            .onClick(() => {
+              this.stopSpeaking();
+            });
+        }
+
+        Blank()
+          .height(30);
 
       }
       .width('100%')
-      .backgroundColor(
-        '#F6F8FB'
-      );
-
+      .padding({
+        left: 20,
+        right: 20
+      });
     }
     .width('100%')
-    .height('100%')
-    .backgroundColor(
-      '#F6F8FB'
-    );
+    .height('100%');
   }
-
 
   // =========================================================
   // 识别结果行
   // =========================================================
-
   @Builder
   ResultRow(
     label: string,
     value: string
   ) {
-
     Row() {
-
       Text(label)
         .fontSize(15)
-        .fontColor(
-          '#777777'
-        )
+        .fontColor('#777777')
         .width('30%');
 
       Text(value)
         .fontSize(16)
-        .fontColor(
-          '#222222'
-        )
-        .fontWeight(
-          FontWeight.Medium
-        )
+        .fontColor('#222222')
+        .fontWeight(FontWeight.Medium)
         .layoutWeight(1)
-        .textAlign(
-          TextAlign.End
-        );
-
+        .textAlign(TextAlign.End);
     }
     .width('100%')
     .padding({
